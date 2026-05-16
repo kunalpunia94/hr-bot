@@ -1,4 +1,13 @@
-"""FAISS-backed semantic retriever with URL/name validation."""
+"""FAISS-backed semantic retriever with URL/name validation.
+
+Embeddings are produced by the ONNX-runtime build of MiniLM via
+`fastembed`, which keeps RAM under ~150 MB at request time (the
+PyTorch sentence-transformers stack uses ~500 MB+ and won't fit on
+Render's 512 MB free tier). The catalog itself is still embedded
+offline by `scripts/build_index.py` using sentence-transformers,
+which is fine because that process is short-lived and runs on
+a larger Render build worker, not on the live web instance.
+"""
 from __future__ import annotations
 
 import logging
@@ -7,11 +16,15 @@ from functools import lru_cache
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
-from app.config import EMBEDDING_MODEL, FAISS_INDEX_PATH, METADATA_PATH
+from app.config import FAISS_INDEX_PATH, METADATA_PATH
 
 logger = logging.getLogger(__name__)
+
+# fastembed uses the same all-MiniLM-L6-v2 weights, but in ONNX format.
+# Vectors are 384-dim and L2-normalized, matching what build_index.py wrote.
+FASTEMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 class Retriever:
@@ -23,8 +36,8 @@ class Retriever:
                 f"Index not built. Run: python -m scripts.build_index "
                 f"(expected {FAISS_INDEX_PATH} and {METADATA_PATH})"
             )
-        logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
-        self.model = SentenceTransformer(EMBEDDING_MODEL)
+        logger.info("Loading embedding model (fastembed/ONNX): %s", FASTEMBED_MODEL)
+        self.model = TextEmbedding(model_name=FASTEMBED_MODEL)
 
         logger.info("Loading FAISS index: %s", FAISS_INDEX_PATH)
         self.index = faiss.read_index(str(FAISS_INDEX_PATH))
@@ -40,10 +53,12 @@ class Retriever:
         logger.info("Retriever ready: %d assessments indexed", len(self.catalog))
 
     def encode(self, query: str) -> np.ndarray:
-        vec = self.model.encode(
-            [query], convert_to_numpy=True, normalize_embeddings=True
-        ).astype("float32")
-        return vec
+        # fastembed yields a generator; materialize the first (only) vector.
+        vec = next(iter(self.model.embed([query])))
+        arr = np.asarray(vec, dtype="float32").reshape(1, -1)
+        # Defensive L2-normalize in case the ONNX export omits it.
+        norm = np.linalg.norm(arr, axis=1, keepdims=True)
+        return arr / np.maximum(norm, 1e-12)
 
     def search(self, query: str, top_k: int = 20) -> list[dict]:
         if not query.strip():
