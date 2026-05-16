@@ -1,4 +1,4 @@
-# SHL Assessment Recommender
+# HR Bot
 
 A conversational agent that recommends SHL assessments from the official SHL
 product catalog. Backed by FAISS semantic retrieval over the catalog JSON +
