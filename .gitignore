@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.local
+data/catalog.json
+index/*.index
+index/*.pkl
+.DS_Store
+*.egg-info/
+.pytest_cache/
